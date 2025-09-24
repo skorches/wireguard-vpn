@@ -316,11 +316,60 @@ show_menu() {
     echo
 }
 
+# Function to check if WireGuard is already installed and configured
+is_wireguard_configured() {
+    if [[ -f "$WG_CONFIG_DIR/$WG_INTERFACE.conf" ]] && systemctl is-active --quiet wg-quick@$WG_INTERFACE; then
+        return 0  # Already configured
+    else
+        return 1  # Not configured
+    fi
+}
+
+# Function for automatic setup and client addition
+auto_setup_and_add_client() {
+    print_header "WireGuard Auto Setup & Client Addition"
+    
+    if is_wireguard_configured; then
+        print_status "WireGuard server is already configured and running"
+        SERVER_PUBLIC_KEY=$(cat $SERVER_PUBLIC_KEY_FILE)
+        get_server_ip
+        add_client
+    else
+        print_status "WireGuard server not found. Starting installation..."
+        echo
+        
+        # Run full installation
+        detect_os
+        get_server_ip
+        get_network_interface
+        install_wireguard
+        generate_server_keys
+        create_server_config
+        enable_ip_forwarding
+        configure_firewall
+        start_wireguard
+        
+        print_status "WireGuard server setup completed!"
+        echo
+        print_status "Now creating your first client configuration..."
+        echo
+        
+        # Add first client
+        add_client
+        
+        echo
+        print_header "Setup Complete!"
+        print_status "Your WireGuard VPN server is now running and your first client is configured."
+        print_status "To add more clients in the future, run: $0 add-client"
+        print_status "To manage the server, run: $0 menu"
+    fi
+}
+
 # Main function
 main() {
     check_root
     
-    case "${1:-menu}" in
+    case "${1:-auto}" in
         "install")
             detect_os
             get_server_ip
@@ -349,7 +398,7 @@ main() {
         "status")
             show_status
             ;;
-        "menu"|*)
+        "menu")
             while true; do
                 show_menu
                 read -p "Choose an option [1-5]: " choice
@@ -377,6 +426,9 @@ main() {
                 echo
                 read -p "Press Enter to continue..."
             done
+            ;;
+        "auto"|*)
+            auto_setup_and_add_client
             ;;
     esac
 }

@@ -32,27 +32,36 @@ A comprehensive bash script to automatically install, configure, and manage a Wi
    chmod +x wireguard-setup.sh
    ```
 
-3. **Run the installation:**
+3. **Run the script (installs server + adds first client automatically):**
    ```bash
-   sudo ./wireguard-setup.sh install
+   sudo ./wireguard-setup.sh
    ```
 
-4. **Add your first client:**
-   ```bash
-   sudo ./wireguard-setup.sh add-client
-   ```
+That's it! The script will:
+- Detect if WireGuard is already installed
+- If not installed: automatically install and configure the server
+- Then add your first client with QR code
+- If already installed: just add a new client
 
 ## Usage
 
-### Interactive Menu
-Run the script without arguments to access the interactive menu:
+### Default Behavior (Recommended)
+Simply run the script to automatically handle everything:
 ```bash
 sudo ./wireguard-setup.sh
 ```
+- **First run**: Installs WireGuard server + adds first client
+- **Subsequent runs**: Just adds new clients
 
 ### Command Line Options
 
-#### Install WireGuard Server
+#### Interactive Menu
+Access the full management menu:
+```bash
+sudo ./wireguard-setup.sh menu
+```
+
+#### Install WireGuard Server Only
 ```bash
 sudo ./wireguard-setup.sh install
 ```
@@ -63,7 +72,7 @@ This will:
 - Set up firewall rules
 - Start the WireGuard service
 
-#### Add a New Client
+#### Add a New Client Only
 ```bash
 sudo ./wireguard-setup.sh add-client
 ```
