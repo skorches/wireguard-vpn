@@ -6,6 +6,9 @@
 
 set -e
 
+# Set secure umask for file creation
+umask 077
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -73,19 +76,19 @@ install_wireguard() {
     case $OS in
         "debian")
             apt update
-            apt install -y wireguard wireguard-tools qrencode iptables-persistent
+            apt install -y wireguard wireguard-tools qrencode iptables-persistent ufw
             ;;
         "centos")
             yum install -y epel-release
-            yum install -y wireguard-tools qrencode iptables-services
+            yum install -y wireguard-tools qrencode iptables-services ufw
             systemctl enable iptables
             ;;
         "arch")
-            pacman -Sy --noconfirm wireguard-tools qrencode iptables
+            pacman -Sy --noconfirm wireguard-tools qrencode iptables ufw
             ;;
     esac
     
-    print_status "WireGuard installed successfully"
+    print_status "WireGuard and firewall tools installed successfully"
 }
 
 # Function to get server public IP
@@ -171,11 +174,52 @@ enable_ip_forwarding() {
 configure_firewall() {
     print_header "Configuring Firewall"
     
-    # Allow WireGuard port
+    # Configure UFW firewall
     if command -v ufw &> /dev/null; then
+        print_status "Configuring UFW firewall..."
+        
+        # Reset UFW to defaults
+        ufw --force reset
+        
+        # Set default policies
+        ufw default deny incoming
+        ufw default allow outgoing
+        ufw default allow routed
+        
+        # Allow SSH (important - don't lock yourself out!)
+        ufw allow ssh
+        ufw allow 22/tcp
+        
+        # Allow WireGuard port
         ufw allow $WG_PORT/udp
-        print_status "UFW rule added for port $WG_PORT"
+        
+        # Allow forwarding for WireGuard
+        sed -i 's/#net\/ipv4\/ip_forward=1/net\/ipv4\/ip_forward=1/' /etc/ufw/sysctl.conf
+        sed -i 's/net.ipv4.ip_forward=0/net.ipv4.ip_forward=1/' /etc/ufw/sysctl.conf
+        
+        # Add NAT rules to UFW before.rules
+        if ! grep -q "# START WIREGUARD RULES" /etc/ufw/before.rules; then
+            sed -i '/# Don.t delete these required lines/i\
+# START WIREGUARD RULES\
+# NAT table rules\
+*nat\
+:POSTROUTING ACCEPT [0:0]\
+# Allow traffic from WireGuard client to '$NETWORK_INTERFACE'\
+-A POSTROUTING -s 10.0.0.0/24 -o '$NETWORK_INTERFACE' -j MASQUERADE\
+COMMIT\
+# END WIREGUARD RULES\
+' /etc/ufw/before.rules
+        fi
+        
+        # Enable UFW
+        ufw --force enable
+        
+        print_status "UFW firewall configured and enabled"
+        print_status "UFW rules:"
+        ufw status verbose
+        
     else
+        print_warning "UFW not available, using iptables directly"
         iptables -A INPUT -p udp --dport $WG_PORT -j ACCEPT
         print_status "iptables rule added for port $WG_PORT"
     fi
@@ -304,6 +348,107 @@ show_status() {
     ls -la $CLIENT_CONFIG_DIR/ 2>/dev/null || echo "No client configurations found"
 }
 
+# Function to uninstall WireGuard
+uninstall_wireguard() {
+    print_header "Uninstalling WireGuard"
+    
+    # Confirm uninstallation
+    echo -e "${RED}WARNING: This will completely remove WireGuard and all configurations!${NC}"
+    echo "This action will:"
+    echo "- Stop WireGuard service"
+    echo "- Remove all server and client configurations"
+    echo "- Remove WireGuard packages"
+    echo "- Clean up firewall rules"
+    echo "- Remove IP forwarding settings"
+    echo
+    read -p "Are you sure you want to continue? (type 'yes' to confirm): " confirm
+    
+    if [[ "$confirm" != "yes" ]]; then
+        print_status "Uninstallation cancelled"
+        return 0
+    fi
+    
+    print_status "Starting WireGuard uninstallation..."
+    
+    # Stop and disable WireGuard service
+    if systemctl is-active --quiet wg-quick@$WG_INTERFACE; then
+        print_status "Stopping WireGuard service..."
+        systemctl stop wg-quick@$WG_INTERFACE
+    fi
+    
+    if systemctl is-enabled --quiet wg-quick@$WG_INTERFACE 2>/dev/null; then
+        print_status "Disabling WireGuard service..."
+        systemctl disable wg-quick@$WG_INTERFACE
+    fi
+    
+    # Remove WireGuard interface if it exists
+    if ip link show $WG_INTERFACE &>/dev/null; then
+        print_status "Removing WireGuard interface..."
+        ip link delete $WG_INTERFACE 2>/dev/null || true
+    fi
+    
+    # Remove configuration files
+    if [[ -d "$WG_CONFIG_DIR" ]]; then
+        print_status "Removing server configurations..."
+        rm -rf "$WG_CONFIG_DIR"
+    fi
+    
+    if [[ -d "$CLIENT_CONFIG_DIR" ]]; then
+        print_status "Removing client configurations..."
+        rm -rf "$CLIENT_CONFIG_DIR"
+    fi
+    
+    # Clean up firewall rules
+    print_status "Cleaning up firewall rules..."
+    if command -v ufw &> /dev/null && ufw status | grep -q "Status: active"; then
+        # Remove WireGuard UFW rules
+        ufw delete allow $WG_PORT/udp 2>/dev/null || true
+        
+        # Remove NAT rules from UFW before.rules
+        if grep -q "# START WIREGUARD RULES" /etc/ufw/before.rules; then
+            print_status "Removing UFW NAT rules..."
+            sed -i '/# START WIREGUARD RULES/,/# END WIREGUARD RULES/d' /etc/ufw/before.rules
+        fi
+        
+        # Reload UFW
+        ufw reload
+        print_status "UFW rules cleaned up"
+    else
+        # Clean up iptables rules
+        print_status "Cleaning up iptables rules..."
+        iptables -D INPUT -p udp --dport $WG_PORT -j ACCEPT 2>/dev/null || true
+        iptables -D FORWARD -i $WG_INTERFACE -j ACCEPT 2>/dev/null || true
+        iptables -D FORWARD -o $WG_INTERFACE -j ACCEPT 2>/dev/null || true
+        iptables -t nat -D POSTROUTING -o $NETWORK_INTERFACE -j MASQUERADE 2>/dev/null || true
+    fi
+    
+    # Remove IP forwarding setting
+    print_status "Disabling IP forwarding..."
+    sed -i '/net.ipv4.ip_forward=1/d' /etc/sysctl.conf 2>/dev/null || true
+    echo 0 > /proc/sys/net/ipv4/ip_forward
+    
+    # Uninstall WireGuard packages
+    print_status "Removing WireGuard packages..."
+    case $OS in
+        "debian")
+            apt remove --purge -y wireguard wireguard-tools
+            apt autoremove -y
+            ;;
+        "centos")
+            yum remove -y wireguard-tools
+            ;;
+        "arch")
+            pacman -Rns --noconfirm wireguard-tools
+            ;;
+    esac
+    
+    print_header "WireGuard Uninstallation Complete!"
+    print_status "WireGuard has been completely removed from your system"
+    print_status "All configurations and client files have been deleted"
+    print_status "Firewall rules have been cleaned up"
+    print_status "IP forwarding has been disabled"
+}
+
 # Function to show menu
 show_menu() {
     echo
@@ -312,7 +457,8 @@ show_menu() {
     echo "2. Add new client"
     echo "3. Remove client"
     echo "4. Show status"
-    echo "5. Exit"
+    echo "5. Uninstall WireGuard completely"
+    echo "6. Exit"
     echo
 }
 
@@ -398,10 +544,15 @@ main() {
         "status")
             show_status
             ;;
+        "uninstall")
+            detect_os
+            get_network_interface
+            uninstall_wireguard
+            ;;
         "menu")
             while true; do
                 show_menu
-                read -p "Choose an option [1-5]: " choice
+                read -p "Choose an option [1-6]: " choice
                 case $choice in
                     1)
                         $0 install
@@ -416,6 +567,9 @@ main() {
                         $0 status
                         ;;
                     5)
+                        $0 uninstall
+                        ;;
+                    6)
                         print_status "Goodbye!"
                         exit 0
                         ;;
