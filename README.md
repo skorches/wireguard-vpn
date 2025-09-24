@@ -22,9 +22,9 @@ A comprehensive bash script to automatically install, configure, and manage a Wi
 
 1. **Download the script:**
    ```bash
-   wget https://raw.githubusercontent.com/yourusername/wireguard-setup/main/wireguard-setup.sh
+   wget https://raw.githubusercontent.com/skorches/wireguard-setup/main/wireguard-setup.sh
    # or
-   curl -O https://raw.githubusercontent.com/yourusername/wireguard-setup/main/wireguard-setup.sh
+   curl -O https://raw.githubusercontent.com/skorches/wireguard-setup/main/wireguard-setup.sh
    ```
 
 2. **Make it executable:**
