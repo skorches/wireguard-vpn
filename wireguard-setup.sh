@@ -76,11 +76,20 @@ install_wireguard() {
     case $OS in
         "debian")
             apt update
-            apt install -y wireguard wireguard-tools qrencode iptables-persistent ufw
+            
+            # Remove conflicting packages first
+            print_status "Removing conflicting firewall packages..."
+            apt remove --purge -y iptables-persistent netfilter-persistent 2>/dev/null || true
+            
+            # Install WireGuard and UFW (UFW replaces iptables-persistent)
+            apt install -y wireguard wireguard-tools qrencode ufw
             ;;
         "centos")
             yum install -y epel-release
-            yum install -y wireguard-tools qrencode iptables-services ufw
+            yum install -y wireguard-tools qrencode iptables-services
+            
+            # Install UFW if available
+            yum install -y ufw 2>/dev/null || print_warning "UFW not available, will use iptables directly"
             systemctl enable iptables
             ;;
         "arch")
@@ -348,6 +357,37 @@ show_status() {
     ls -la $CLIENT_CONFIG_DIR/ 2>/dev/null || echo "No client configurations found"
 }
 
+# Function to fix broken packages
+fix_broken_packages() {
+    print_header "Fixing Broken Packages"
+    
+    case $OS in
+        "debian")
+            print_status "Cleaning up package conflicts..."
+            
+            # Remove all conflicting firewall packages
+            apt remove --purge -y ufw iptables-persistent netfilter-persistent 2>/dev/null || true
+            
+            # Fix broken packages
+            dpkg --configure -a
+            apt --fix-broken install -y
+            
+            # Clean up
+            apt autoremove -y
+            apt autoclean
+            
+            print_status "Package system cleaned up"
+            ;;
+        "centos")
+            yum clean all
+            yum check
+            ;;
+        "arch")
+            pacman -Syu
+            ;;
+    esac
+}
+
 # Function to uninstall WireGuard
 uninstall_wireguard() {
     print_header "Uninstalling WireGuard"
@@ -427,18 +467,29 @@ uninstall_wireguard() {
     sed -i '/net.ipv4.ip_forward=1/d' /etc/sysctl.conf 2>/dev/null || true
     echo 0 > /proc/sys/net/ipv4/ip_forward
     
-    # Uninstall WireGuard packages
-    print_status "Removing WireGuard packages..."
+    # Uninstall WireGuard packages and clean up firewall packages
+    print_status "Removing WireGuard and firewall packages..."
     case $OS in
         "debian")
+            # Remove WireGuard packages
             apt remove --purge -y wireguard wireguard-tools
+            
+            # Remove all firewall-related packages to prevent conflicts
+            apt remove --purge -y ufw iptables-persistent netfilter-persistent 2>/dev/null || true
+            
+            # Clean up package system
             apt autoremove -y
+            apt autoclean
+            
+            # Fix any broken packages
+            dpkg --configure -a
+            apt --fix-broken install -y
             ;;
         "centos")
-            yum remove -y wireguard-tools
+            yum remove -y wireguard-tools ufw iptables-services
             ;;
         "arch")
-            pacman -Rns --noconfirm wireguard-tools
+            pacman -Rns --noconfirm wireguard-tools ufw
             ;;
     esac
     
@@ -457,8 +508,9 @@ show_menu() {
     echo "2. Add new client"
     echo "3. Remove client"
     echo "4. Show status"
-    echo "5. Uninstall WireGuard completely"
-    echo "6. Exit"
+    echo "5. Fix broken packages"
+    echo "6. Uninstall WireGuard completely"
+    echo "7. Exit"
     echo
 }
 
@@ -544,6 +596,10 @@ main() {
         "status")
             show_status
             ;;
+        "fix")
+            detect_os
+            fix_broken_packages
+            ;;
         "uninstall")
             detect_os
             get_network_interface
@@ -552,7 +608,7 @@ main() {
         "menu")
             while true; do
                 show_menu
-                read -p "Choose an option [1-6]: " choice
+                read -p "Choose an option [1-7]: " choice
                 case $choice in
                     1)
                         $0 install
@@ -567,9 +623,12 @@ main() {
                         $0 status
                         ;;
                     5)
-                        $0 uninstall
+                        $0 fix
                         ;;
                     6)
+                        $0 uninstall
+                        ;;
+                    7)
                         print_status "Goodbye!"
                         exit 0
                         ;;
